@@ -9,7 +9,7 @@ import sqlite3
 from pymongo import MongoClient
 
 # 连接 SQLite 数据库
-sqlite_conn = sqlite3.connect(r'C:\Users\LL\bookstore\fe\data\book_lx.db')
+sqlite_conn = sqlite3.connect(r'/home/zmjj-kk/bookstore/fe/data/book_lx.db')  # 修改为正确的路径
 sqlite_cursor = sqlite_conn.cursor()
 
 # 连接 MongoDB 数据库
@@ -18,8 +18,9 @@ db = mongo_client['bookstore_db']
 books_collection = db['books']
 
 # 读取 SQLite 数据并插入到 MongoDB
-sqlite_cursor.execute("SELECT * FROM book")  # 假设表名为 "book"
+sqlite_cursor.execute("SELECT * FROM books_batch_0")  # 使用正确的表名 "books_batch_0"
 rows = sqlite_cursor.fetchall()
+
 for row in rows:
     book_data = {
         'id': row[0],
@@ -29,6 +30,9 @@ for row in rows:
         # 添加其他字段...
     }
     books_collection.insert_one(book_data)
+
+# 输出 SQLite DB 路径
+print("SQLite DB Path:", r'/home/zmjj-kk/bookstore/fe/data/book_lx.db')
 
 # 关闭连接
 sqlite_conn.close()

@@ -1,8 +1,8 @@
 import os
-import sqlite3 as sqlite
 import random
 import base64
 import simplejson as json
+from pymongo import MongoClient
 
 
 class Book:
@@ -31,67 +31,68 @@ class Book:
 
 class BookDB:
     def __init__(self, large: bool = False):
+        # 连接 MongoDB（与迁移脚本保持一致）
+        self.client = MongoClient('mongodb://localhost:27017/')
+        self.db = self.client['bookstore_db']  # 数据库名
+        self.collection = self.db['books']     # 集合名（迁移后的图书数据）
+
+        # 兼容原逻辑的路径定义（实际不再使用SQLite）
         parent_path = os.path.dirname(os.path.dirname(__file__))
         self.db_s = os.path.join(parent_path, "data/book.db")
         self.db_l = os.path.join(parent_path, "data/book_lx.db")
-        if large:
-            self.book_db = self.db_l
-        else:
-            self.book_db = self.db_s
+        self.large = large  # 保留参数，兼容原有调用方式
 
-    def get_book_count(self):
-        conn = sqlite.connect(self.book_db)
-        cursor = conn.execute("SELECT count(id) FROM book")
-        row = cursor.fetchone()
-        return row[0]
+    def get_book_count(self) -> int:
+        """获取图书总数（替代SQLite查询）"""
+        return self.collection.count_documents({})
 
-    def get_book_info(self, start, size) -> [Book]:
+    def get_book_info(self, start: int, size: int) -> [Book]:
+        """批量获取图书信息（从MongoDB查询，保持原返回格式）"""
         books = []
-        conn = sqlite.connect(self.book_db)
-        cursor = conn.execute(
-            "SELECT id, title, author, "
-            "publisher, original_title, "
-            "translator, pub_year, pages, "
-            "price, currency_unit, binding, "
-            "isbn, author_intro, book_intro, "
-            "content, tags, picture FROM book ORDER BY id "
-            "LIMIT ? OFFSET ?",
-            (size, start),
-        )
-        for row in cursor:
+        
+        # MongoDB查询：按id排序，分页获取
+        cursor = self.collection.find() \
+            .sort("id", 1) \
+            .skip(start) \
+            .limit(size)
+
+        for doc in cursor:
             book = Book()
-            book.id = row[0]
-            book.title = row[1]
-            book.author = row[2]
-            book.publisher = row[3]
-            book.original_title = row[4]
-            book.translator = row[5]
-            book.pub_year = row[6]
-            book.pages = row[7]
-            book.price = row[8]
+            # 基础字段映射（与MongoDB文档字段对应）
+            book.id = doc.get("id", "")
+            book.title = doc.get("title", "")
+            book.author = doc.get("author", "")
+            book.publisher = doc.get("publisher", "")
+            book.original_title = doc.get("original_title", "")
+            book.translator = doc.get("translator", "")
+            book.pub_year = doc.get("pub_year", "")
+            book.pages = doc.get("pages", 0)
+            book.price = doc.get("price", 0)
+            book.currency_unit = doc.get("currency_unit", "")
+            book.binding = doc.get("binding", "")
+            book.isbn = doc.get("isbn", "")
+            book.author_intro = doc.get("author_intro", "")
+            book.book_intro = doc.get("book_intro", "")
+            book.content = doc.get("content", "")
 
-            book.currency_unit = row[9]
-            book.binding = row[10]
-            book.isbn = row[11]
-            book.author_intro = row[12]
-            book.book_intro = row[13]
-            book.content = row[14]
-            tags = row[15]
+            # 处理标签（原SQLite中是换行分隔的字符串）
+            tags = doc.get("tags", "")
+            if isinstance(tags, str):
+                for tag in tags.split("\n"):
+                    if tag.strip():
+                        book.tags.append(tag)
+            elif isinstance(tags, list):
+                # 若迁移时已转为列表，直接使用
+                book.tags = [t for t in tags if t.strip()]
 
-            picture = row[16]
-
-            for tag in tags.split("\n"):
-                if tag.strip() != "":
-                    book.tags.append(tag)
-            for i in range(0, random.randint(0, 9)):
-                if picture is not None:
-                    encode_str = base64.b64encode(picture).decode("utf-8")
+            # 处理图片（模拟原逻辑的随机数量base64编码）
+            picture = doc.get("picture", None)
+            if picture:
+                encode_str = base64.b64encode(picture).decode("utf-8")
+                # 随机生成0-9张图片（与原逻辑一致）
+                for _ in range(random.randint(0, 9)):
                     book.pictures.append(encode_str)
-            books.append(book)
-            # print(tags.decode('utf-8'))
 
-            # print(book.tags, len(book.picture))
-            # print(book)
-            # print(tags)
+            books.append(book)
 
         return books

@@ -1,15 +1,18 @@
-# be/model/order_cleanup.py
 import threading
 import time
 from datetime import datetime, timedelta
+import sqlite3
 from be.model import db_conn
-from pymongo.errors import PyMongoError
+from be.model import error
+
 
 class OrderCleanup(db_conn.DBConn):
     def __init__(self):
         db_conn.DBConn.__init__(self)
         self.running = False
         self.thread = None
+        # 超时时间设置为30分钟（单位：秒）
+        self.timeout_seconds = 1800
 
     def start_cleanup(self, interval=300):  # 5分钟检查一次
         """启动订单自动取消任务"""
@@ -36,37 +39,52 @@ class OrderCleanup(db_conn.DBConn):
     def _cancel_timeout_orders(self):
         """取消超时未付款的订单"""
         try:
-            # 查找创建时间超过30分钟且状态为pending的订单
-            timeout_time = datetime.now() - timedelta(minutes=30)
-            
-            timeout_orders = self.db.orders.find({
-                "status": "pending",
-                "create_time": {"$lt": timeout_time}
-            })
+            # 计算超时时间点
+            timeout_time = datetime.now() - timedelta(seconds=self.timeout_seconds)
+            timeout_timestamp = timeout_time.strftime('%Y-%m-%d %H:%M:%S')
+
+            # 开启事务
+            self.conn.execute("BEGIN")
+
+            # 查找超时未付款的订单（假设新增了create_time和status字段）
+            cursor = self.conn.execute(
+                "SELECT order_id, user_id, store_id FROM new_order "
+                "WHERE status = 'pending' AND create_time < ?",
+                (timeout_timestamp,)
+            )
+            timeout_orders = cursor.fetchall()
 
             for order in timeout_orders:
-                order_id = order["order_id"]
-                user_id = order["user_id"]
-                store_id = order["store_id"]
+                order_id, user_id, store_id = order
 
                 # 恢复库存
-                order_details = self.db.order_details.find({"order_id": order_id})
-                for detail in order_details:
-                    self.db.store.update_one(
-                        {
-                            "store_id": store_id,
-                            "book_id": detail["book_id"]
-                        },
-                        {"$inc": {"stock_level": detail["count"]}}
+                detail_cursor = self.conn.execute(
+                    "SELECT book_id, count FROM new_order_detail WHERE order_id = ?",
+                    (order_id,)
+                )
+                details = detail_cursor.fetchall()
+                for book_id, count in details:
+                    self.conn.execute(
+                        "UPDATE store SET stock_level = stock_level + ? "
+                        "WHERE store_id = ? AND book_id = ?",
+                        (count, store_id, book_id)
                     )
 
                 # 更新订单状态为已取消
-                self.db.orders.update_one(
-                    {"order_id": order_id},
-                    {"$set": {"status": "cancelled", "cancel_reason": "timeout"}}
+                self.conn.execute(
+                    "UPDATE new_order SET status = 'cancelled', cancel_reason = 'timeout' "
+                    "WHERE order_id = ?",
+                    (order_id,)
                 )
 
                 print(f"Cancelled timeout order: {order_id}")
 
-        except PyMongoError as e:
-            print(f"MongoDB error in order cleanup: {e}")
+            # 提交事务
+            self.conn.commit()
+
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            print(f"SQLite error in order cleanup: {e}")
+        except Exception as e:
+            self.conn.rollback()
+            print(f"Unexpected error in order cleanup: {e}")
